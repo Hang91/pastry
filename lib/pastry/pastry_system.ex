@@ -18,7 +18,7 @@ defmodule PASTRY.Pastry_system do
 				case count + 1 == numMessages do
 					true -> 
 						averageHops = sum / count
-						IO.puts "message number is #{count}"
+						IO.puts "message number is #{count + 1}"
 						IO.puts "average number of hops is #{averageHops}"
 					false ->
 						IO.puts "message number is #{count + 1}"

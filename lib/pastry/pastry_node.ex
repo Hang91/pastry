@@ -16,11 +16,12 @@ defmodule PASTRY.Pastry_node do
 		neighborSet = get_neighborSet(all_nodes, size, 0, [], localId)
 
 
-		GenServer.start(__MODULE__, [localId, leaf_setL, leaf_setS, route_table, neighborSet], [name: String.to_atom(localId)])
+		GenServer.start(__MODULE__, [localId, leaf_setL, leaf_setS, route_table, neighborSet,numNodes], [name: String.to_atom(localId)])
 		send String.to_atom("0"), {:start}
 
-		:timer.sleep(2000)
-		spawn fn -> send_message(all_nodes, size, numRequests, localId, leaf_setL, leaf_setS, route_table, neighborSet) end
+		waitTime = numNodes * simple_log(numNodes, 2, 1)
+		:timer.sleep(waitTime)
+		spawn fn -> send_message(all_nodes, size, numRequests, localId, leaf_setL, leaf_setS, route_table, neighborSet, numNodes) end
 
 	end
 
@@ -35,26 +36,48 @@ defmodule PASTRY.Pastry_node do
 		|> String.at(0)
 	end
 
-	def send_message(list, size, numRequests, localId, leaf_setL, leaf_setS, route_table, neighborSet) do
+	def send_message(list, size, numRequests, localId, leaf_setL, leaf_setS, route_table, neighborSet, numNodes) do
 		if numRequests > 0 do
 			key = Enum.random(list)
 			case String.equivalent?(key, localId) do
 				false -> 
-					send_message(localId, key, 0, leaf_setL, leaf_setS, route_table, neighborSet)
-					send_message(list, size, numRequests - 1, localId, leaf_setL, leaf_setS, route_table, neighborSet)
+					send_message(localId, key, 0, leaf_setL, leaf_setS, route_table, neighborSet, numNodes)
+					send_message(list, size, numRequests - 1, localId, leaf_setL, leaf_setS, route_table, neighborSet, numNodes)
 				true ->
-					send_message(list, size, numRequests, localId, leaf_setL, leaf_setS, route_table, neighborSet)
+					send_message(list, size, numRequests, localId, leaf_setL, leaf_setS, route_table, neighborSet, numNodes)
 			end
 		end
 	end
 
-	def send_message(localId, key, hops, leaf_setL, leaf_setS, route_table, neighborSet) do
+	def send_message(localId, key, hops, leaf_setL, leaf_setS, route_table, neighborSet, numNodes) do
+		waitTime = numNodes * simple_log(numNodes, 2, 1)
 		case inSet?(leaf_setL, key) || inSet?(leaf_setS, key) do
 			true -> 
-				GenServer.cast(String.to_atom(key), {key, hops + 1})
+				try do
+					GenServer.call(String.to_atom(key), {key, hops + 1}, waitTime)
+				catch
+					:exit, reason -> 
+						IO.puts "leaf #{reason}"
+						send_message(localId, key, hops, leaf_setL, leaf_setS, route_table, neighborSet, numNodes)
+				end
 			false ->
 				routingRes = routing(key, route_table, localId, 0, neighborSet)
-				GenServer.cast(String.to_atom(routingRes), {key, hops + 1})
+				try do
+					GenServer.call(String.to_atom(routingRes), {key, hops + 1}, waitTime)
+				catch
+					:exit, reason -> 
+						IO.puts "route #{reason}"
+						send_message(localId, key, hops, leaf_setL, leaf_setS, route_table, neighborSet, numNodes)				
+				end
+		end
+	end
+
+	def simple_log(input, res, i) do
+		case res < input do
+			true ->
+				simple_log(input, res * 2, i + 1)
+			false ->
+				i
 		end
 	end
 
@@ -129,22 +152,20 @@ defmodule PASTRY.Pastry_node do
 		end
 	end
 
-	def handle_cast(msg, [localId, leaf_setL, leaf_setS, route_table, neighborSet]) do
+	def handle_call(msg, from, [localId, leaf_setL, leaf_setS, route_table, neighborSet, numNodes]) do
 		case msg do
 			{key, hops} -> 
 				case String.equivalent?(key, localId) do
 					true -> 
 						# 0 is server name
 						send String.to_atom("0"), {:arrive, hops}
-						{:noreply, [localId, leaf_setL, leaf_setS, route_table, neighborSet]}
 					false -> 
-						send_message(localId, key, hops, leaf_setL, leaf_setS, route_table, neighborSet)
-						{:noreply, [localId, leaf_setL, leaf_setS, route_table, neighborSet]}
+						send_message(localId, key, hops, leaf_setL, leaf_setS, route_table, neighborSet, numNodes)
 				end
 			_ -> 
-				IO.puts "cast exception"
-				{:noreply, [localId, leaf_setL, leaf_setS, route_table, neighborSet]}
+				IO.puts "call exception"
 		end
+		{:reply, :ok, [localId, leaf_setL, leaf_setS, route_table, neighborSet, numNodes]}
 	end
 
 	def get_hash(input) do
