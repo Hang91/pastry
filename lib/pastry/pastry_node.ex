@@ -3,17 +3,25 @@ defmodule PASTRY.Pastry_node do
 	use GenServer
 
 	def start_node(nodeId, numNodes, numRequests) do
+		# local node id
 		nodeIdStr = Integer.to_string(nodeId)
-		hashId = get_hash(nodeIdStr)
-		all_nodes = Enum.sort(all_nodesId(numNodes, 1, []))
-		size = Enum.count(all_nodes)
-		index = binary_search(all_nodes, hashId, 0, size - 1)
+		localId = get_hash(nodeIdStr)
+		all_nodes = Enum.sort(all_nodesId(numNodes, 1, nodeId, []))
+		size = numNodes
+
+		index = binary_search(all_nodes, localId, 0, size - 1)
 		leaf_setL = get_leafSetL(all_nodes, index + 1, size, [], 16)
 		leaf_setS = get_leafSetS(all_nodes, index - 1, [], 16)
-		route_table = get_routeTable(all_nodes, hashId, [], 0, size - 1, 0)
+		route_table = get_routeTable(all_nodes, localId, [], 0, size - 1, 0)
+		neighborSet = get_neighborSet(all_nodes, size, 0, [], localId)
 
-		GenServer.start_link(__MODULE__, [], [name: String.to_atom(hashId)])
-		IO.puts "start node #{hashId}"
+
+		GenServer.start(__MODULE__, [localId, leaf_setL, leaf_setS, route_table, neighborSet], [name: String.to_atom(localId)])
+		send String.to_atom("0"), {:start}
+
+		:timer.sleep(2000)
+		spawn fn -> send_message(all_nodes, size, numRequests, localId, leaf_setL, leaf_setS, route_table, neighborSet) end
+
 	end
 
 	def get_charToInteger(str, index) do
@@ -27,8 +35,116 @@ defmodule PASTRY.Pastry_node do
 		|> String.at(0)
 	end
 
-	def handle_cast(msg, []) do
-		{:noreply, []}
+	def send_message(list, size, numRequests, localId, leaf_setL, leaf_setS, route_table, neighborSet) do
+		if numRequests > 0 do
+			key = Enum.random(list)
+			case String.equivalent?(key, localId) do
+				false -> 
+					send_message(localId, key, 0, leaf_setL, leaf_setS, route_table, neighborSet)
+					send_message(list, size, numRequests - 1, localId, leaf_setL, leaf_setS, route_table, neighborSet)
+				true ->
+					send_message(list, size, numRequests, localId, leaf_setL, leaf_setS, route_table, neighborSet)
+			end
+		end
+	end
+
+	def send_message(localId, key, hops, leaf_setL, leaf_setS, route_table, neighborSet) do
+		case inSet?(leaf_setL, key) || inSet?(leaf_setS, key) do
+			true -> 
+				GenServer.cast(String.to_atom(key), {key, hops + 1})
+			false ->
+				routingRes = routing(key, route_table, localId, 0, neighborSet)
+				GenServer.cast(String.to_atom(routingRes), {key, hops + 1})
+		end
+	end
+
+	def routing(key, route_table, localId, index, neighborSet) do
+		keyChar = String.at(key, index)
+		localChar = String.at(localId, index)
+		case keyChar == localChar do
+			true -> 
+				routing(key, route_table, localId, index + 1, neighborSet)
+			false -> 
+				res = find_closest(key, route_table, localId, index)
+				case res do
+					:none -> getFromNeighbor(neighborSet)
+					id -> id
+				end
+		end
+	end
+
+	def find_closest(key, route_table, localId, index) do
+		list = Enum.at(route_table, index, :none)
+		case list do
+			:none -> :none
+			nil -> 
+				:none
+			_ ->
+				keyVal = String.at(key, index) |> to_string |> String.to_integer(16)
+				localVal = String.at(localId, index) |> to_string |> String.to_integer(16)
+				minDistance = abs(keyVal - localVal)
+				closest = find_closest(list, key, index, 0, minDistance, localId)
+				case String.equivalent?(closest, localId) do
+					true -> :none
+					false -> closest
+				end
+		end
+	end
+
+	def find_closest(list, key, index, i, minDistance, closest) do
+		case i < Enum.count(list) do
+			true ->
+				nodeId = Enum.at(list, i)
+				distance = 
+				case nodeId != nil do
+					true -> 
+						keyVal = String.at(key, index) |> to_string 
+						|> String.to_integer(16)
+						nodeVal = String.at(nodeId, index) |> to_string 
+						|> String.to_integer(16)
+						abs(keyVal - nodeVal)
+					false -> 16
+				end
+
+				case distance < minDistance do
+					true -> 
+						find_closest(list, key, index, i + 1, distance, nodeId)
+					false -> 
+						find_closest(list, key, index, i + 1, minDistance, closest)
+				end
+			false ->
+				closest
+		end
+	end
+
+	def getFromNeighbor(neighborSet) do
+		Enum.random(neighborSet)
+	end 
+
+	def inSet?(list, key) do
+		res = Enum.find(list, -1, fn(id) -> String.equivalent?(key, id) end)
+		case res >= 0 do
+			true -> true
+			false -> false
+		end
+	end
+
+	def handle_cast(msg, [localId, leaf_setL, leaf_setS, route_table, neighborSet]) do
+		case msg do
+			{key, hops} -> 
+				case String.equivalent?(key, localId) do
+					true -> 
+						# 0 is server name
+						send String.to_atom("0"), {:arrive, hops}
+						{:noreply, [localId, leaf_setL, leaf_setS, route_table, neighborSet]}
+					false -> 
+						send_message(localId, key, hops, leaf_setL, leaf_setS, route_table, neighborSet)
+						{:noreply, [localId, leaf_setL, leaf_setS, route_table, neighborSet]}
+				end
+			_ -> 
+				IO.puts "cast exception"
+				{:noreply, [localId, leaf_setL, leaf_setS, route_table, neighborSet]}
+		end
 	end
 
 	def get_hash(input) do
@@ -36,12 +152,12 @@ defmodule PASTRY.Pastry_node do
 		|> Base.encode16
 	end
 
-	def all_nodesId(numNodes, i, list) do
-		case numNodes < i do
-			false ->
-				hashId = get_hash(Integer.to_string(i))
-				all_nodesId(numNodes, i + 1, List.insert_at(list, 0, hashId))
+	def all_nodesId(numNodes, count, localNum, list) do
+		case count <= numNodes do
 			true ->
+				hashId = get_hash(Integer.to_string(count))
+				all_nodesId(numNodes, count + 1, localNum, List.insert_at(list, 0, hashId))
+			false ->
 				List.flatten(list)
 		end
 	end
@@ -49,7 +165,7 @@ defmodule PASTRY.Pastry_node do
 	def get_leafSetL(list, index, size, res, i) do
 		case i > 0 && index < size do
 			true -> 
-				{id, rem} = List.pop_at(list, index)
+				id = Enum.at(list, index)
 				new_res = List.insert_at(res, 16 - i, id)
 				get_leafSetL(list, index + 1, size, new_res, i - 1)
 			false ->
@@ -60,7 +176,7 @@ defmodule PASTRY.Pastry_node do
 	def get_leafSetS(list, index, res, i) do
 		case i > 0 && index >= 0 do
 			true -> 
-				{id, rem} = List.pop_at(list, index)
+				id = Enum.at(list, index)
 				new_res = List.insert_at(res, 16 - i, id)
 				get_leafSetS(list, index - 1, new_res, i - 1)
 			false ->
@@ -87,7 +203,7 @@ defmodule PASTRY.Pastry_node do
 								new_list = 
 								case searchRes do
 									{:ok, charIndex} ->
-										{routeId, rem1} = List.pop_at(list, charIndex)
+										routeId = Enum.at(list, charIndex)
 										List.insert_at(new_list, 0, routeId)
 									{:no} -> []
 								end
@@ -114,10 +230,25 @@ defmodule PASTRY.Pastry_node do
 		end
 	end
 
+	def get_neighborSet(list, size, i, res, localId) do
+		case i < 32 do
+			true -> 
+				id = Enum.random(list)
+				case String.equivalent?(id, localId) do
+					true -> 
+						get_neighborSet(list, size, i, res, localId)
+					false ->
+						new_res = List.insert_at(res, 0, id)
+						get_neighborSet(list, size, i + 1, new_res, localId)
+				end
+			false -> res
+		end
+	end
+
 
 	def binary_search_index(list, left, right, index, char_atIndex) do
 		mid = Integer.floor_div(left + right, 2)
-		{nodeId, rem} = List.pop_at(list, mid)
+		nodeId = Enum.at(list, mid)
 		findRes = String.at(nodeId, index)
 		case left <= right do
 			true -> 
@@ -139,7 +270,7 @@ defmodule PASTRY.Pastry_node do
 
 	def binary_search_lastAt(list, left, right, index, char_atIndex) do
 		mid = Integer.floor_div(left + right, 2)
-		{nodeId, rem} = List.pop_at(list, mid)
+		nodeId = Enum.at(list, mid)
 		findRes = String.at(nodeId, index)
 		case left < right - 1 do
 			true -> 
@@ -150,7 +281,7 @@ defmodule PASTRY.Pastry_node do
 						binary_search_lastAt(list, mid, right, index, char_atIndex)
 				end
 			false ->
-				{rightNode, rem1} = List.pop_at(list, right)
+				rightNode = Enum.at(list, right)
 				rightRes = String.at(rightNode, index)				
 				case rightRes == char_atIndex do
 					true -> {:ok, right}
@@ -165,7 +296,7 @@ defmodule PASTRY.Pastry_node do
 
 	def binary_search_firstAt(list, left, right, index, char_atIndex) do
 		mid = Integer.floor_div(left + right, 2)
-		{nodeId, rem} = List.pop_at(list, mid)
+		nodeId = Enum.at(list, mid)
 		findRes = String.at(nodeId, index)
 		case left < right - 1 do
 			true -> 
@@ -176,7 +307,7 @@ defmodule PASTRY.Pastry_node do
 						binary_search_firstAt(list, left, mid, index, char_atIndex)
 				end
 			false -> 
-				{rightNode, rem1} = List.pop_at(list, right)
+				rightNode = Enum.at(list, right)
 				rightRes = String.at(rightNode, index)
 				case findRes == char_atIndex do
 					true -> {:ok, left}
@@ -191,7 +322,7 @@ defmodule PASTRY.Pastry_node do
 
 	def binary_search(list, localId, left, right) do
 		mid = Integer.floor_div((left + right), 2)
-		{nodeId, rem_list} = List.pop_at(list, mid)
+		nodeId = Enum.at(list, mid)
 		localIdNum = String.to_integer(localId, 16)
 		nodeIdNum = String.to_integer(nodeId, 16)
 		case nodeIdNum == localIdNum do
