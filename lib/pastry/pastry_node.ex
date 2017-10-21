@@ -10,12 +10,21 @@ defmodule PASTRY.Pastry_node do
 		index = binary_search(all_nodes, hashId, 0, size - 1)
 		leaf_setL = get_leafSetL(all_nodes, index + 1, size, [], 16)
 		leaf_setS = get_leafSetS(all_nodes, index - 1, [], 16)
-		lastres = binary_search_lastAt(all_nodes, 0, numNodes - 1, 0, String.at(hashId, 0))
-		firstres = binary_search_firstAt(all_nodes, 0, numNodes - 1, 0, String.at(hashId, 0))
-		{:ok, last} = lastres
-		{:ok, first} = firstres
+		route_table = get_routeTable(all_nodes, hashId, [], 0, size - 1, 0)
+
 		GenServer.start_link(__MODULE__, [], [name: String.to_atom(hashId)])
 		IO.puts "start node #{hashId}"
+	end
+
+	def get_charToInteger(str, index) do
+		String.at(str, index)
+		|> to_string
+		|> String.to_integer(16)
+	end
+
+	def integerToCharBase16(int) do
+		Integer.to_string(int, 16)
+		|> String.at(0)
 	end
 
 	def handle_cast(msg, []) do
@@ -59,31 +68,52 @@ defmodule PASTRY.Pastry_node do
 		end
 	end
 
-	def get_routeTable(list, localId, res, left, right, index) do
-		
+	def get_routeTable(list, localId, res, left, right, index) do		
 		case index < 32 do
 			true ->
 				new_list = []
-				localChar = String.at(localId, index)
-				new_list = 
-				for n <- 0..15 do
-					new_list = 
-					if n != String.to_integer(localChar) do
-						searchRes = binary_search_index(list, left, right, index, localChar)
+				case left < 0 || right < 0 do
+					true -> 
+						new_res = List.insert_at(res, index, new_list)
+						get_routeTable(list, localId, new_res, left, right, index + 1)
+					false ->
+						localChar = get_charToInteger(localId, index)
 						new_list = 
-						case searchRes do
-							{:ok, firstIndex} ->
-								{routeId, rem1} = List.pop_at(list, firstIndex)
-								List.insert_at(new_list, 0, routeId)
-							{:no} -> "do nothing"
+						for n <- 0..15 do
+							new_list = 
+							if n != localChar do
+								charN = integerToCharBase16(n)
+								searchRes = binary_search_index(list, left, right, index, charN)
+								new_list = 
+								case searchRes do
+									{:ok, charIndex} ->
+										{routeId, rem1} = List.pop_at(list, charIndex)
+										List.insert_at(new_list, 0, routeId)
+									{:no} -> []
+								end
+							end
 						end
-					end
+						new_list = List.flatten(new_list)
+						new_res = List.insert_at(res, index, new_list)
+						searchRes1 = binary_search_firstAt(list, left, right, index, String.at(localId, index))
+						case searchRes1 do
+							{:ok, new_left} ->
+								searchRes2 = binary_search_lastAt(list, left, right, index, String.at(localId, index))
+								case searchRes2 do
+									{:ok, new_right} ->
+										get_routeTable(list, localId, new_res, new_left, new_right, index + 1)
+									{:no} ->
+										get_routeTable(list, localId, new_res, -1, -1, index + 1)
+								end
+							{:no} -> 
+								get_routeTable(list, localId, new_res, -1, -1, index + 1)
+						end
 				end
-				List.insert_at(res, index, )
 			false ->
 				res
 		end
 	end
+
 
 	def binary_search_index(list, left, right, index, char_atIndex) do
 		mid = Integer.floor_div(left + right, 2)
@@ -133,7 +163,7 @@ defmodule PASTRY.Pastry_node do
 		end
 	end
 
-	def binary_search_firstAt(list, left, right,index, char_atIndex) do
+	def binary_search_firstAt(list, left, right, index, char_atIndex) do
 		mid = Integer.floor_div(left + right, 2)
 		{nodeId, rem} = List.pop_at(list, mid)
 		findRes = String.at(nodeId, index)
