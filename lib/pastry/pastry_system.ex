@@ -5,6 +5,8 @@ defmodule PASTRY.Pastry_system do
 		for n <- 1..nodesNum do
 			PASTRY.Pastry_node.start_node(n, nodesNum, numRequests)
 		end
+
 	end
+
 
 end
