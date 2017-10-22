@@ -2,11 +2,9 @@ defmodule PASTRY.Pastry_node do
 	
 	use GenServer
 
-	def start_node(nodeId, numNodes, numRequests) do
-		# local node id
-		nodeIdStr = Integer.to_string(nodeId)
-		localId = get_hash(nodeIdStr)
-		all_nodes = Enum.sort(all_nodesId(numNodes, 1, nodeId, []))
+	def start_node(nodeId, numNodes, numRequests, all_nodes) do
+
+		localId = get_hash(Integer.to_string(nodeId))
 		size = numNodes
 
 		index = binary_search(all_nodes, localId, 0, size - 1)
@@ -15,8 +13,8 @@ defmodule PASTRY.Pastry_node do
 		route_table = get_routeTable(all_nodes, localId, [], 0, size - 1, 0)
 		neighborSet = get_neighborSet(all_nodes, size, 0, [], localId)
 
-
 		GenServer.start(__MODULE__, [localId, leaf_setL, leaf_setS, route_table, neighborSet,numNodes], [name: String.to_atom(localId)])
+
 		send String.to_atom("0"), {:start}
 
 		waitTime = numNodes * simple_log(numNodes, 2, 1)
@@ -50,24 +48,21 @@ defmodule PASTRY.Pastry_node do
 	end
 
 	def send_message(localId, key, hops, leaf_setL, leaf_setS, route_table, neighborSet, numNodes) do
-		waitTime = numNodes * simple_log(numNodes, 2, 1)
 		case inSet?(leaf_setL, key) || inSet?(leaf_setS, key) do
-			true -> 
-				try do
-					GenServer.call(String.to_atom(key), {key, hops + 1}, waitTime)
+			true ->
+				try do 
+					res = GenServer.call(String.to_atom(key), {key, hops + 1})
 				catch
-					:exit, reason -> 
-						IO.puts "leaf #{reason}"
-						send_message(localId, key, hops, leaf_setL, leaf_setS, route_table, neighborSet, numNodes)
+					:exit, reason ->
+						send String.to_atom("0"), {:failure, hops, localId, key}
 				end
 			false ->
 				routingRes = routing(key, route_table, localId, 0, neighborSet)
 				try do
-					GenServer.call(String.to_atom(routingRes), {key, hops + 1}, waitTime)
+					res = GenServer.call(String.to_atom(routingRes), {key, hops + 1})
 				catch
-					:exit, reason -> 
-						IO.puts "route #{reason}"
-						send_message(localId, key, hops, leaf_setL, leaf_setS, route_table, neighborSet, numNodes)				
+					:exit, reason ->
+						send String.to_atom("0"), {:failure, hops, localId, routingRes}
 				end
 		end
 	end
@@ -173,15 +168,6 @@ defmodule PASTRY.Pastry_node do
 		|> Base.encode16
 	end
 
-	def all_nodesId(numNodes, count, localNum, list) do
-		case count <= numNodes do
-			true ->
-				hashId = get_hash(Integer.to_string(count))
-				all_nodesId(numNodes, count + 1, localNum, List.insert_at(list, 0, hashId))
-			false ->
-				List.flatten(list)
-		end
-	end
 
 	def get_leafSetL(list, index, size, res, i) do
 		case i > 0 && index < size do
